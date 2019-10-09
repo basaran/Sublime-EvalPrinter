@@ -2,251 +2,277 @@ import sublime, sublime_plugin
 import subprocess
 import os
 try:
-	from EvalPrinter.KillableCmd import KillableCmd
+    from EvalPrinter.KillableCmd import KillableCmd
 except:
-	from KillableCmd import KillableCmd
+    from KillableCmd import KillableCmd
 
 class EvalPrintCommand(sublime_plugin.TextCommand):
 
-	def run(self, edit, codeStr=None):
+    def run(self, edit, codeStr=None):
 
-		view = self.view
+        view = self.view
 
-		codeStr = codeStr or Helper.getSelectedText(view)
-		syntax = view.settings().get('syntax')
+        # codeStr = codeStr or Helper.getSelectedText(view)
+        codeStr = codeStr or Helper.getSelectedText(view)
+        
+        
+        # mb if there is nothing selected, pull the entire buffer
+        if not codeStr:
+            codeStr = self.view.substr(sublime.Region(0, self.view.size()))
+            
+        # mb syntax from scope
+        # syntax = view.settings().get('syntax')
+        syntax = view.scope_name(view.sel()[0].a)
+        
+        if "text.plain" in syntax:
+            syntax = view.settings().get('syntax')
+            # syntax = Helper.getSetting("default_language")
 
-		if "Plain text" in syntax:
-			syntax = Helper.getSetting("default_language")
-
-		output = EvalEvaluator.evalPrint(codeStr, syntax)
-		Helper.showResult(output)
+        output = EvalEvaluator.evalPrint(codeStr, syntax)
+        Helper.showResult(output)
 
 
 class EvalPrintEnterLiveSessionCommand(sublime_plugin.TextCommand):
 
-	def run(self, edit):
+    def run(self, edit):
 
-		view = self.view
-		toggledValue = not view.settings().get("isEvalPrinterLiveSession", False)
-		view.settings().set("isEvalPrinterLiveSession", toggledValue)
-		sublime.status_message("EvalPrinter's Live Session is " + ("on" if toggledValue else "off"))
+        view = self.view
+        toggledValue = not view.settings().get("isEvalPrinterLiveSession", False)
+        view.settings().set("isEvalPrinterLiveSession", toggledValue)
+        sublime.status_message("EvalPrinter's Live Session is " + ("on" if toggledValue else "off"))
 
-		if toggledValue:
-			flags = 0
-			if len(Helper.getSelectedText(view)) == view.size():
-				# everything was selected, which is why we don't want to highlight the LiveSessionRegions
-				flags = sublime.HIDDEN
-				view.settings().set("EvalPrinterLiveSessionFullBuffer", True)
+        if toggledValue:
+            flags = 0
+            if len(Helper.getSelectedText(view)) == view.size():
+                # everything was selected, which is why we don't want to highlight the LiveSessionRegions
+                flags = sublime.HIDDEN
+                view.settings().set("EvalPrinterLiveSessionFullBuffer", True)
 
-			view.add_regions("EvalPrinterLiveSessionRegions", Helper.getExpandedRegions(view), "string", flags=flags)
-			view.run_command("eval_print")
+            view.add_regions("EvalPrinterLiveSessionRegions", Helper.getExpandedRegions(view), "string", flags=flags)
+            view.run_command("eval_print")
 
-		else:
-			view.erase_regions("EvalPrinterLiveSessionRegions")
-			view.settings().set("EvalPrinterLiveSessionFullBuffer", False)
+        else:
+            view.erase_regions("EvalPrinterLiveSessionRegions")
+            view.settings().set("EvalPrinterLiveSessionFullBuffer", False)
 
 
 class ModifyListener(sublime_plugin.EventListener):
 
-	def on_modified_async(self, view):
+    def on_modified_async(self, view):
 
-		if not view.settings().get("isEvalPrinterLiveSession", False):
-			view.erase_regions("EvalPrinterLiveSessionRegions")
-			return
+        if not view.settings().get("isEvalPrinterLiveSession", False):
+            view.erase_regions("EvalPrinterLiveSessionRegions")
+            return
 
-		fullBuffer = view.settings().get("EvalPrinterLiveSessionFullBuffer", False)
-		if fullBuffer:
-			liveSessionRegions = [sublime.Region(0, view.size())]
-		else:
-			liveSessionRegions = view.get_regions("EvalPrinterLiveSessionRegions")
+        fullBuffer = view.settings().get("EvalPrinterLiveSessionFullBuffer", False)
+        if fullBuffer:
+            liveSessionRegions = [sublime.Region(0, view.size())]
+        else:
+            liveSessionRegions = view.get_regions("EvalPrinterLiveSessionRegions")
 
 
-		areRegionsNotEmpty = any(map(lambda r: r.size() > 0, liveSessionRegions))
-		if areRegionsNotEmpty:
-			codeStr = Helper.getSelectedText(view, liveSessionRegions)
-			view.run_command("eval_print", dict(codeStr = codeStr))
-		elif not fullBuffer:
-			# liveSessionRegions is an empty region; deactive LiveSessionMode
-			view.run_command("eval_print_enter_live_session")
+        areRegionsNotEmpty = any(map(lambda r: r.size() > 0, liveSessionRegions))
+        if areRegionsNotEmpty:
+            codeStr = Helper.getSelectedText(view, liveSessionRegions)
+            view.run_command("eval_print", dict(codeStr = codeStr))
+        elif not fullBuffer:
+            # liveSessionRegions is an empty region; deactive LiveSessionMode
+            view.run_command("eval_print_enter_live_session")
 
 
 
 class TestEvalPrinterCommand(sublime_plugin.TextCommand):
 
-	def run(self, edit, codeStr, syntax):
 
-		output = EvalEvaluator.evalPrint(codeStr, syntax)
+    def run(self, edit, codeStr, syntax):
 
-		if int(sublime.version()) < 3000:
-			self.view.run_command("insert", {"characters": output})
-		else:
-			self.view.run_command("append", {"characters": output})
+        output = EvalEvaluator.evalPrint(codeStr, syntax)
+
+        if int(sublime.version()) < 3000:
+            self.view.run_command("insert", {"characters": output})
+        else:
+            self.view.run_command("append", {"characters": output})
 
 
 
 class EvalEvaluator:
 
-	@staticmethod
-	def evalPrint(codeStr, syntax):
+    @staticmethod
+    def evalPrint(codeStr, syntax):
 
-		output = None
+        output = None
 
-		if "Python" in syntax:
-			output = EvalEvaluator.runPython(codeStr)
-		elif "JavaScript" in syntax:
-			output = EvalEvaluator.runJavaScript(codeStr)
-		elif "CoffeeScript" in syntax:
-			output = EvalEvaluator.runCoffee(codeStr)
-		else:
-			output = "Couldn't determine a supported language. Maybe you want to set the default_language setting."
+        if "source.python" in syntax:
+            output = EvalEvaluator.runPython(codeStr)
+        elif "source.js" in syntax:
+            output = EvalEvaluator.runJavaScript(codeStr)
+        elif "source.shell.bash" in syntax:
+            output = EvalEvaluator.runBash(codeStr)
+        elif "source.php" in syntax:
+            output = EvalEvaluator.runPHP(codeStr)
+        elif "CoffeeScript" in syntax:
+            output = EvalEvaluator.runCoffee(codeStr)
+        else:
+            output = "Couldn't determine a supported language. Maybe you want to set the default_language setting."
 
-		return output
-
-
-	@staticmethod
-	def runJavaScript(codeStr):
-
-		return Helper.executeCommand(["node", "-p", codeStr], False)
+        return output
 
 
-	@staticmethod
-	def runCoffee(codeStr):
+    @staticmethod
+    def runJavaScript(codeStr):
 
-		# does not work with multi-line-strings:
-		# transpileCmd = ['coffee', '-p', '-b', '-e', codeStr]
+        return Helper.executeCommand(["node", "-e", codeStr], False)
 
-		# does not work on unix:
-		# transpileCmd = ['coffee', '-p', '-b', Helper.writeToTmp(codeStr)]
+    @staticmethod
+    def runBash(codeStr):
 
-		transpileCmd = 'coffee -p -b "' + Helper.writeToTmp(codeStr) + '"'
-		transpiledJS = Helper.executeCommand(transpileCmd)
-
-		evaluatedJS = Helper.executeCommand(["node", "-p", transpiledJS], False)
-
-		return Helper.formatTwoOutputs(evaluatedJS, transpiledJS)
+        return Helper.executeCommand(["bash", "-exec", codeStr], False)
 
 
-	@staticmethod
-	def runPython(codeStr):
+    @staticmethod
+    def runPHP(codeStr):
 
-		codeStr = Helper.unindentCode(codeStr)
+        return Helper.executeCommand(["php", "-r", codeStr], False)
 
-		try:
-			output = str(eval(codeStr))
-		except:
-			output = Helper.executeCommand(["python", "-c", codeStr], False)
+    @staticmethod
+    def runCoffee(codeStr):
 
-		return output
+        # does not work with multi-line-strings:
+        # transpileCmd = ['coffee', '-p', '-b', '-e', codeStr]
+
+        # does not work on unix:
+        # transpileCmd = ['coffee', '-p', '-b', Helper.writeToTmp(codeStr)]
+
+        transpileCmd = 'coffee -p -b "' + Helper.writeToTmp(codeStr) + '"'
+        transpiledJS = Helper.executeCommand(transpileCmd)
+
+        evaluatedJS = Helper.executeCommand(["node", "-p", transpiledJS], False)
+
+        return Helper.formatTwoOutputs(evaluatedJS, transpiledJS)
+
+
+    @staticmethod
+    def runPython(codeStr):
+
+        codeStr = Helper.unindentCode(codeStr)
+
+        try:
+            output = str(eval(codeStr))
+        except:
+            output = Helper.executeCommand(["python", "-c", codeStr], False)
+
+        return output
 
 
 
 class Helper:
 
-	@staticmethod
-	def getSelectedText(view, regions=None):
+    @staticmethod
+    def getSelectedText(view, regions=None):
 
-		fullRegions = Helper.getExpandedRegions(view, regions)
-		return "\n".join([view.substr(region) for region in fullRegions])
-
-
-	@staticmethod
-	def getExpandedRegions(view, regions=None):
-
-		regions = regions or view.sel()
-		fullRegions = []
-
-		for region in regions:
-
-			if region.a == region.b:
-				region = view.line(region)
-
-			fullRegions.append(region)
-
-		return fullRegions
+        fullRegions = Helper.getExpandedRegions(view, regions)
+        return "\n".join([view.substr(region) for region in fullRegions])
 
 
-	@staticmethod
-	def showResult(resultStr):
+    @staticmethod
+    def getExpandedRegions(view, regions=None):
 
-		if int(sublime.version()) < 3000:
-			sublime.active_window().run_command("show_panel", {"panel": "output.myOutput"})
-			myOutput = sublime.active_window().get_output_panel("myOutput")
+        regions = regions or view.sel()
+        fullRegions = []
 
-			edit = myOutput.begin_edit()
-			myOutput.insert(edit, 0, resultStr)
-			myOutput.end_edit(edit)
+        for region in regions:
 
-		else:
-			myOutput = sublime.active_window().create_output_panel("myOutput")
-			sublime.active_window().run_command("show_panel", {"panel": "output.myOutput"})
+            if region.a == region.b:
+                region = view.line(region)
 
-			myOutput.run_command("append", {"characters": resultStr})
+            fullRegions.append(region)
 
-		myOutput.set_syntax_file("Packages/JavaScript/JavaScript.tmLanguage")
+        return fullRegions
 
 
-	@staticmethod
-	def executeCommand(cmd, shell=True):
+    @staticmethod
+    def showResult(resultStr):
 
-		timeoutLimit = Helper.getSetting("execution_timeout")
-		return KillableCmd(cmd, timeoutLimit, shell).Run()
+        if int(sublime.version()) < 3000:
+            sublime.active_window().run_command("show_panel", {"panel": "output.myOutput"})
+            myOutput = sublime.active_window().get_output_panel("myOutput")
 
+            edit = myOutput.begin_edit()
+            myOutput.insert(edit, 0, resultStr)
+            myOutput.end_edit(edit)
 
-	@staticmethod
-	def unindentCode(codeStr):
-		# finds the smallest common indentation and removes it,
-		# so that indented code can be evaluated properly
+        else:
+            myOutput = sublime.active_window().create_output_panel("myOutput")
+            sublime.active_window().run_command("show_panel", {"panel": "output.myOutput"})
 
-		indentations = []
-		codeLines = codeStr.splitlines()
+            myOutput.run_command("append", {"characters": resultStr})
 
-		for l in codeLines:
-			if l.lstrip() == "":
-				# ignore empty lines
-				continue
-
-			indentation = len(l) - len(l.lstrip())
-			indentations.append(indentation)
-
-		unindentLength = min(indentations)
-
-		newCodeLines = [l[unindentLength:] for l in codeLines]
-		return "\n".join(newCodeLines)
+        myOutput.set_syntax_file("Packages/JavaScript/JavaScript.tmLanguage")
 
 
+    @staticmethod
+    def executeCommand(cmd, shell=True):
 
-	@staticmethod
-	def getCodeFilePath():
-
-		# epPath = os.path.join(sublime.packages_path(), "EvalPrinter")
-		epPath = sublime.packages_path()
-		fileName = "ep_tmp"
-		filePath = os.path.join(epPath, fileName)
-
-		return filePath
+        timeoutLimit = Helper.getSetting("execution_timeout")
+        return KillableCmd(cmd, timeoutLimit, shell).Run()
 
 
-	@staticmethod
-	def writeToTmp(s):
+    @staticmethod
+    def unindentCode(codeStr):
+        # finds the smallest common indentation and removes it,
+        # so that indented code can be evaluated properly
 
-		filePath = Helper.getCodeFilePath()
+        indentations = []
+        codeLines = codeStr.splitlines()
 
-		with open(filePath, "wt") as out_file:
-			out_file.write(s)
+        for l in codeLines:
+            if l.lstrip() == "":
+                # ignore empty lines
+                continue
 
-		return filePath
+            indentation = len(l) - len(l.lstrip())
+            indentations.append(indentation)
+
+        unindentLength = min(indentations)
+
+        newCodeLines = [l[unindentLength:] for l in codeLines]
+        return "\n".join(newCodeLines)
 
 
-	@staticmethod
-	def formatTwoOutputs(a, b):
 
-		if "error" in a.lower():
-			a, b = b, a
+    @staticmethod
+    def getCodeFilePath():
 
-		return  a + "\n" + "-" * 80 + "\n\n" + b
+        # epPath = os.path.join(sublime.packages_path(), "EvalPrinter")
+        epPath = sublime.packages_path()
+        fileName = "ep_tmp"
+        filePath = os.path.join(epPath, fileName)
 
-	@staticmethod
-	def getSetting(attr):
+        return filePath
 
-		settings = sublime.load_settings("EvalPrinter.sublime-settings")
-		return settings.get(attr)
+
+    @staticmethod
+    def writeToTmp(s):
+
+        filePath = Helper.getCodeFilePath()
+
+        with open(filePath, "wt") as out_file:
+            out_file.write(s)
+
+        return filePath
+
+
+    @staticmethod
+    def formatTwoOutputs(a, b):
+
+        if "error" in a.lower():
+            a, b = b, a
+
+        return  a + "\n" + "-" * 80 + "\n\n" + b
+
+    @staticmethod
+    def getSetting(attr):
+
+        settings = sublime.load_settings("EvalPrinter.sublime-settings")
+        return settings.get(attr)
+
